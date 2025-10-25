@@ -21,6 +21,3 @@ docker build -t universal-proxy .
 docker run -p 8080:8080 universal-proxy
 ```
 
-## License
-
-MIT
