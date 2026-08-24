@@ -7,13 +7,9 @@ import (
 	"github.com/tdewolff/parse/v2/js"
 )
 
-type JSRewriter struct{}
-
-func (r *JSRewriter) SupportedContentType() string {
-	return "application/javascript"
-}
-
-func (r *JSRewriter) Rewrite(body []byte, domain, proxyBase string) []byte {
+// RewriteJS rewrites a javascript body so all URLs route through the proxy
+// base.
+func RewriteJS(body []byte, domain, proxyBase string) []byte {
 	l := js.NewLexer(parse.NewInputBytes(body))
 
 	type frame struct {

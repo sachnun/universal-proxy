@@ -22,9 +22,9 @@ type Host struct {
 	validator     *core.ProxyValidator
 	validatorOnce sync.Once
 
-	mu                    sync.Mutex
-	countries             map[string]*core.ProxyPool
-	primaries             []*core.ProxyState
+	mu                   sync.Mutex
+	countries            map[string]*core.ProxyPool
+	primaries            []*core.ProxyState
 	trafficFailThreshold int
 }
 
@@ -34,23 +34,28 @@ func NewHost(logger *log.Logger) *Host {
 	if logger == nil {
 		logger = log.Default()
 	}
-	pool := core.NewProxyPool(logger, nil)
-	router := core.NewPoolRouter(nil, core.NewRotatingProxyTransport(pool))
 	h := &Host{
 		logger:    logger,
-		pool:      pool,
-		router:    router,
 		countries: make(map[string]*core.ProxyPool),
 	}
-
-	cfg := core.DefaultValidatorConfig()
-	validator := core.NewProxyValidator(logger, cfg)
+	validator := core.NewProxyValidator(logger, core.ValidatorConfig{})
 	validator.SetGraduate(h.ReplaceProxies)
 	h.validator = validator
-	h.trafficFailThreshold = cfg.TrafficFailThreshold
+	h.trafficFailThreshold = core.DefaultTrafficFailThreshold
 
-	pool.SetTrafficFailureHook(cfg.TrafficFailThreshold, validator.OnTrafficFailure)
+	h.pool = h.newPool()
+	h.router = core.NewPoolRouter(nil, core.NewRotatingProxyTransport(h.pool))
 	return h
+}
+
+// newPool builds a pool wired to the background validator's traffic-failure
+// hook. Must be called after h.validator is set.
+func (h *Host) newPool() *core.ProxyPool {
+	pool := core.NewProxyPool(h.logger, nil)
+	if h.validator != nil {
+		pool.SetTrafficFailureHook(h.trafficFailThreshold, h.validator.OnTrafficFailure)
+	}
+	return pool
 }
 
 // Submit routes a freshly fetched proxy list through the background
@@ -65,9 +70,6 @@ func (h *Host) Submit(proxies []*core.ProxyState) {
 // Router exposes the pool router (for named pools, e.g. WARP variants).
 func (h *Host) Router() *core.PoolRouter { return h.router }
 
-// DefaultPool returns the pool used when no pool is selected by auth.
-func (h *Host) DefaultPool() *core.ProxyPool { return h.pool }
-
 // Country returns the pool for a country code, creating and registering it
 // on the router on first use.
 func (h *Host) Country(code string) *core.ProxyPool {
@@ -77,21 +79,7 @@ func (h *Host) Country(code string) *core.ProxyPool {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if pool, ok := h.countries[code]; ok {
-		return pool
-	}
-	pool := core.NewProxyPool(h.logger, nil)
-	if h.validator != nil {
-		pool.SetTrafficFailureHook(h.trafficFailThreshold, h.validator.OnTrafficFailure)
-	}
-	transport := core.NewRotatingProxyTransport(pool)
-	h.countries[code] = pool
-	h.router.Add(&core.NamedPool{
-		Name:      code,
-		Username:  code,
-		Pool:      pool,
-		Transport: transport,
-	})
+	pool := h.countryLocked(code)
 	h.applyPrimariesLocked()
 	return pool
 }
@@ -139,10 +127,7 @@ func (h *Host) countryLocked(code string) *core.ProxyPool {
 	if pool, ok := h.countries[code]; ok {
 		return pool
 	}
-	pool := core.NewProxyPool(h.logger, nil)
-	if h.validator != nil {
-		pool.SetTrafficFailureHook(h.trafficFailThreshold, h.validator.OnTrafficFailure)
-	}
+	pool := h.newPool()
 	h.countries[code] = pool
 	h.router.Add(&core.NamedPool{
 		Name:      code,

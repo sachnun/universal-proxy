@@ -14,6 +14,16 @@ import (
 	"time"
 )
 
+// newProxyHandlerWithTransport builds a handler around a custom transport,
+// mirroring NewProxyHandler's CF retry wrapping for router-less tests.
+func newProxyHandlerWithTransport(logger *log.Logger, transport http.RoundTripper) *ProxyHandler {
+	h := &ProxyHandler{logger: logger, transport: transport}
+	if h.transport != nil {
+		h.transport = NewCFRetryTransport(h.transport, h.logger)
+	}
+	return h
+}
+
 func TestProxyHandler_ServeHTTP_InvalidPath(t *testing.T) {
 	h := NewProxyHandler(nil, nil, "")
 	req := httptest.NewRequest("GET", "/", nil)
@@ -82,7 +92,7 @@ func TestProxyHandler_ServeHTTP_RoutesCorrectly(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := NewProxyHandler(nil, mock, "")
+			h := newProxyHandlerWithTransport(nil, mock)
 			req := tt.buildReq()
 			w := httptest.NewRecorder()
 
@@ -96,9 +106,9 @@ func TestProxyHandler_ServeHTTP_RoutesCorrectly(t *testing.T) {
 }
 
 func TestProxyHandler_ForwardProxy_UnsupportedScheme(t *testing.T) {
-	h := NewProxyHandler(nil, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	h := newProxyHandlerWithTransport(nil, roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok")), Header: make(http.Header)}, nil
-	}), "")
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "ftp://example.com/path", nil)
 	w := httptest.NewRecorder()
@@ -112,7 +122,7 @@ func TestProxyHandler_ForwardProxy_UnsupportedScheme(t *testing.T) {
 
 func TestProxyHandler_ForwardProxy_ForwardsRequest(t *testing.T) {
 	var gotReq *http.Request
-	h := NewProxyHandler(
+	h := newProxyHandlerWithTransport(
 		log.New(io.Discard, "", 0),
 		roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			gotReq = req
@@ -123,7 +133,6 @@ func TestProxyHandler_ForwardProxy_ForwardsRequest(t *testing.T) {
 				Request:    req,
 			}, nil
 		}),
-		"",
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/search?q=hello", nil)
@@ -224,7 +233,7 @@ func TestProxyHandler_ConnectTunnel_NoRotatingTransport(t *testing.T) {
 
 func TestProxyHandler_RewriteProxy_Preserved(t *testing.T) {
 	var gotReq *http.Request
-	h := NewProxyHandler(
+	h := newProxyHandlerWithTransport(
 		log.New(io.Discard, "", 0),
 		roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			gotReq = req
@@ -235,7 +244,6 @@ func TestProxyHandler_RewriteProxy_Preserved(t *testing.T) {
 				Request:    req,
 			}, nil
 		}),
-		"",
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "/example.com/path", nil)
@@ -267,15 +275,6 @@ func TestNewProxyHandler(t *testing.T) {
 	if h == nil {
 		t.Error("Expected non-nil handler")
 	}
-	if h.htmlRewriter == nil {
-		t.Error("Expected non-nil HTML rewriter")
-	}
-	if h.cssRewriter == nil {
-		t.Error("Expected non-nil CSS rewriter")
-	}
-	if h.jsRewriter == nil {
-		t.Error("Expected non-nil JS rewriter")
-	}
 	if h.transport != nil {
 		t.Error("Expected nil transport by default")
 	}
@@ -287,14 +286,14 @@ func TestNewProxyHandler(t *testing.T) {
 func TestProxyHandlerDoesNotLogRequestDetails(t *testing.T) {
 	var logs strings.Builder
 	logger := log.New(&logs, "", 0)
-	h := NewProxyHandler(logger, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	h := newProxyHandlerWithTransport(logger, roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(strings.NewReader("ok")),
 			Header:     make(http.Header),
 			Request:    req,
 		}, nil
-	}), "")
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "http://proxy.local/example.com/search?q=hello", nil)
 	w := httptest.NewRecorder()

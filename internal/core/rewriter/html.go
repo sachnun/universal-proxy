@@ -8,13 +8,9 @@ import (
 	"golang.org/x/net/html"
 )
 
-type HTMLRewriter struct{}
-
-func (r *HTMLRewriter) SupportedContentType() string {
-	return "text/html"
-}
-
-func (r *HTMLRewriter) Rewrite(body []byte, domain, proxyBase string) []byte {
+// RewriteHTML rewrites a text/html body so all URLs route through the
+// proxy base.
+func RewriteHTML(body []byte, domain, proxyBase string) []byte {
 	z := html.NewTokenizer(bytes.NewReader(body))
 	var out bytes.Buffer
 
@@ -24,7 +20,7 @@ func (r *HTMLRewriter) Rewrite(body []byte, domain, proxyBase string) []byte {
 		case html.ErrorToken:
 			return out.Bytes()
 		case html.StartTagToken, html.SelfClosingTagToken:
-			r.rewriteTag(z, tt, domain, proxyBase, &out)
+			rewriteTag(z, tt, domain, proxyBase, &out)
 		default:
 			out.Write(z.Raw())
 		}
@@ -36,7 +32,7 @@ type htmlAttr struct {
 	value string
 }
 
-func (r *HTMLRewriter) rewriteTag(z *html.Tokenizer, tt html.TokenType, domain, proxyBase string, out *bytes.Buffer) {
+func rewriteTag(z *html.Tokenizer, tt html.TokenType, domain, proxyBase string, out *bytes.Buffer) {
 	tagNameB, hasAttr := z.TagName()
 	tagName := string(tagNameB)
 
@@ -179,8 +175,7 @@ func rewriteHTMLURL(tagName string, attrs []htmlAttr, a htmlAttr, domain, proxyB
 	case "ping":
 		return rewritePingURLs(a.value, domain, proxyBase)
 	case "style":
-		css := CSSRewriter{}
-		return string(css.Rewrite([]byte(a.value), domain, proxyBase))
+		return string(RewriteCSS([]byte(a.value), domain, proxyBase))
 	case "content":
 		if tagName == "meta" {
 			return rewriteMetaContent(attrs, a, domain, proxyBase)

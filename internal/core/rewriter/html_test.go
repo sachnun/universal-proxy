@@ -6,7 +6,7 @@ import (
 )
 
 func TestHTMLRewriter_Rewrite(t *testing.T) {
-	r := &HTMLRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
@@ -180,7 +180,7 @@ func TestHTMLRewriter_Rewrite(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := string(r.Rewrite([]byte(tt.input), domain, proxyBase))
+			result := string(RewriteHTML([]byte(tt.input), domain, proxyBase))
 
 			for _, s := range tt.contains {
 				if !strings.Contains(result, s) {
@@ -198,7 +198,7 @@ func TestHTMLRewriter_Rewrite(t *testing.T) {
 }
 
 func TestHTMLRewriter_Srcset(t *testing.T) {
-	r := &HTMLRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
@@ -226,7 +226,7 @@ func TestHTMLRewriter_Srcset(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := string(r.Rewrite([]byte(tt.input), domain, proxyBase))
+			result := string(RewriteHTML([]byte(tt.input), domain, proxyBase))
 
 			for _, s := range tt.contains {
 				if !strings.Contains(result, s) {
@@ -238,12 +238,12 @@ func TestHTMLRewriter_Srcset(t *testing.T) {
 }
 
 func TestHTMLRewriter_MetaRefresh(t *testing.T) {
-	r := &HTMLRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
 	input := `<meta http-equiv="refresh" content="5; url=/new-page">`
-	result := string(r.Rewrite([]byte(input), domain, proxyBase))
+	result := string(RewriteHTML([]byte(input), domain, proxyBase))
 
 	if !strings.Contains(result, "/example.com/new-page") {
 		t.Errorf("Expected meta refresh URL to be rewritten, got: %s", result)
@@ -251,12 +251,12 @@ func TestHTMLRewriter_MetaRefresh(t *testing.T) {
 }
 
 func TestHTMLRewriter_InlineStyle(t *testing.T) {
-	r := &HTMLRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
 	input := `<div style="background: url(/images/bg.png)"></div>`
-	result := string(r.Rewrite([]byte(input), domain, proxyBase))
+	result := string(RewriteHTML([]byte(input), domain, proxyBase))
 
 	if !strings.Contains(result, "/example.com/images/bg.png") {
 		t.Errorf("Expected inline style URL to be rewritten, got: %s", result)
@@ -264,12 +264,12 @@ func TestHTMLRewriter_InlineStyle(t *testing.T) {
 }
 
 func TestHTMLRewriter_BaseTag(t *testing.T) {
-	r := &HTMLRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
 	input := `<base href="https://example.com/">`
-	result := string(r.Rewrite([]byte(input), domain, proxyBase))
+	result := string(RewriteHTML([]byte(input), domain, proxyBase))
 
 	if !strings.Contains(result, `<base href="/example.com/"`) {
 		t.Errorf("Expected base tag to be rewritten, got: %s", result)
@@ -277,12 +277,12 @@ func TestHTMLRewriter_BaseTag(t *testing.T) {
 }
 
 func TestHTMLRewriter_SVG(t *testing.T) {
-	r := &HTMLRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
 	input := `<svg><image xlink:href="/img.svg"/></svg>`
-	result := string(r.Rewrite([]byte(input), domain, proxyBase))
+	result := string(RewriteHTML([]byte(input), domain, proxyBase))
 
 	if !strings.Contains(result, `xlink:href="/example.com/img.svg"`) {
 		t.Errorf("Expected SVG xlink:href to be rewritten and preserved, got: %s", result)
@@ -290,12 +290,12 @@ func TestHTMLRewriter_SVG(t *testing.T) {
 }
 
 func TestHTMLRewriter_VoidElements(t *testing.T) {
-	r := &HTMLRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
 	input := `<br><hr><input type="text"><img src="/img.png">`
-	result := string(r.Rewrite([]byte(input), domain, proxyBase))
+	result := string(RewriteHTML([]byte(input), domain, proxyBase))
 
 	if !strings.Contains(result, `src="/example.com/img.png"`) {
 		t.Errorf("Expected img src to be rewritten, got: %s", result)
@@ -306,11 +306,11 @@ func TestHTMLRewriter_VoidElements(t *testing.T) {
 }
 
 func TestHTMLRewriter_HeadInjection(t *testing.T) {
-	r := &HTMLRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
-	result := string(r.Rewrite([]byte("<head><title>Test</title></head>"), domain, proxyBase))
+	result := string(RewriteHTML([]byte("<head><title>Test</title></head>"), domain, proxyBase))
 	if !strings.Contains(result, "<script>") || !strings.Contains(result, "</script>") {
 		t.Errorf("Expected monkey-patch script to be injected after <head>, got: %s", result)
 	}
@@ -320,23 +320,23 @@ func TestHTMLRewriter_HeadInjection(t *testing.T) {
 }
 
 func TestHTMLRewriter_NoHeadNoInjection(t *testing.T) {
-	r := &HTMLRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
-	result := string(r.Rewrite([]byte("<body><p>No head here</p></body>"), domain, proxyBase))
+	result := string(RewriteHTML([]byte("<body><p>No head here</p></body>"), domain, proxyBase))
 	if strings.Contains(result, "<script>") {
 		t.Errorf("Expected no injection when no <head>, got: %s", result)
 	}
 }
 
 func TestHTMLRewriter_EmptyAttribute(t *testing.T) {
-	r := &HTMLRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
 	input := `<a href>Link</a>`
-	result := string(r.Rewrite([]byte(input), domain, proxyBase))
+	result := string(RewriteHTML([]byte(input), domain, proxyBase))
 
 	if !strings.Contains(result, `href`) {
 		t.Errorf("Expected empty href to be preserved, got: %s", result)

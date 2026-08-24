@@ -6,7 +6,7 @@ import (
 )
 
 func TestCSSRewriter_Rewrite(t *testing.T) {
-	r := &CSSRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
@@ -85,7 +85,7 @@ func TestCSSRewriter_Rewrite(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := string(r.Rewrite([]byte(tt.input), domain, proxyBase))
+			result := string(RewriteCSS([]byte(tt.input), domain, proxyBase))
 
 			for _, s := range tt.contains {
 				if !strings.Contains(result, s) {
@@ -99,12 +99,5 @@ func TestCSSRewriter_Rewrite(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestCSSRewriter_SupportedContentType(t *testing.T) {
-	r := &CSSRewriter{}
-	if r.SupportedContentType() != "text/css" {
-		t.Errorf("Expected text/css, got %s", r.SupportedContentType())
 	}
 }

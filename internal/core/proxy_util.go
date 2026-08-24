@@ -5,11 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
-	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -45,25 +42,6 @@ func NewProviderHTTPClient() *http.Client {
 		Timeout:   ProviderFetchTimeout,
 		Transport: NewUTLSTransport(dialer.DialContext),
 	}
-}
-
-// TestProxyReachable probes a proxy by dialing a fixed public endpoint.
-func TestProxyReachable(p *ProxyState) bool {
-	if p.DialContext == nil {
-		return false
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), HealthTimeout)
-	defer cancel()
-
-	start := time.Now()
-	conn, err := p.DialContext(ctx, "tcp", ProbeTarget)
-	p.Latency = time.Since(start)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
 }
 
 // ProbeProxy verifies a proxy end-to-end against the control target and
@@ -139,57 +117,18 @@ func ProbeProxy(ctx context.Context, ps *ProxyState) (time.Duration, bool) {
 		}
 	}
 	if ps.IP != "" {
+		isp, cc := whoisForIP(egCtx, ps.IP)
 		if ps.ISP == "" {
-			ps.ISP = ispForIP(egCtx, ps.IP)
+			ps.ISP = isp
 		}
 		// Retry country verification if the first egress resolution did not
 		// observe it, so a mislabeled proxy is eventually re-routed to its
 		// actual region instead of staying wrong forever.
-		if !ps.CountryVerified {
-			if cc := countryForIP(egCtx, ps.IP); cc != "" {
-				ps.Country = cc
-				ps.CountryVerified = true
-			}
+		if !ps.CountryVerified && cc != "" {
+			ps.Country = cc
+			ps.CountryVerified = true
 		}
 	}
 
 	return time.Since(start), true
-}
-
-// TestProxiesConcurrently health-checks proxies with bounded concurrency and
-// returns only the healthy ones. Progress is logged every 500 probes.
-func TestProxiesConcurrently(proxies []*ProxyState, concurrency int, logger *log.Logger) []*ProxyState {
-	if len(proxies) == 0 {
-		return nil
-	}
-
-	sem := make(chan struct{}, concurrency)
-	healthy := make([]*ProxyState, 0, len(proxies))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	var tested int32
-	total := len(proxies)
-
-	for _, p := range proxies {
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(ps *ProxyState) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			if TestProxyReachable(ps) {
-				mu.Lock()
-				healthy = append(healthy, ps)
-				mu.Unlock()
-			}
-
-			if n := atomic.AddInt32(&tested, 1); n%500 == 0 || n == int32(total) {
-				logger.Printf("[CHECK] %d/%d, %d healthy", n, total, len(healthy))
-			}
-		}(p)
-	}
-
-	wg.Wait()
-	logger.Printf("[CHECK] %d proxies, %d healthy", total, len(healthy))
-	return healthy
 }

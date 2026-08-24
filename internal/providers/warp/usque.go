@@ -14,12 +14,7 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-type usqueInstance struct {
-	cmd       *exec.Cmd
-	socksPort string
-}
-
-func startWarpUsque(port, fwdPort, configPath string, psiphonDial func(ctx context.Context, network, addr string) (net.Conn, error), logger *log.Logger) (*usqueInstance, proxy.ContextDialer, error) {
+func startWarpUsque(port, fwdPort, configPath string, psiphonDial func(ctx context.Context, network, addr string) (net.Conn, error), logger *log.Logger) (proxy.ContextDialer, error) {
 	startMasqueProxy(psiphonDial, fwdPort, logger)
 
 	cfg := "/tmp/usque-" + port + ".json"
@@ -32,20 +27,19 @@ func startWarpUsque(port, fwdPort, configPath string, psiphonDial func(ctx conte
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
-		return nil, nil, fmt.Errorf("usque start: %w", err)
+		return nil, fmt.Errorf("usque start: %w", err)
 	}
 
-	u := &usqueInstance{cmd: cmd, socksPort: port}
-	dialer, err := u.waitReady(logger)
+	dialer, err := waitUsqueReady(port, logger)
 	if err != nil {
-		u.close()
-		return nil, nil, err
+		cmd.Process.Signal(os.Interrupt)
+		return nil, err
 	}
-	return u, dialer, nil
+	return dialer, nil
 }
 
-func (u *usqueInstance) waitReady(logger *log.Logger) (proxy.ContextDialer, error) {
-	addr := "127.0.0.1:" + u.socksPort
+func waitUsqueReady(port string, logger *log.Logger) (proxy.ContextDialer, error) {
+	addr := "127.0.0.1:" + port
 
 	for range 60 {
 		d, err := proxy.SOCKS5("tcp", addr, nil, proxy.Direct)
@@ -64,7 +58,7 @@ func (u *usqueInstance) waitReady(logger *log.Logger) (proxy.ContextDialer, erro
 			continue
 		}
 		conn.Close()
-		logger.Printf("WARP: usque ready on :%s", u.socksPort)
+		logger.Printf("WARP: usque ready on :%s", port)
 		return ctxDialer, nil
 	}
 	return nil, fmt.Errorf("usque socks timeout")
@@ -91,10 +85,4 @@ func patchConfigEndpoint(path, endpoint string) {
 		[]byte(`"endpoint_h2_v4": "162.159.198.2"`),
 		[]byte(`"endpoint_h2_v4": "`+endpoint+`"`))
 	os.WriteFile(path, content, 0644)
-}
-
-func (u *usqueInstance) close() {
-	if u.cmd != nil && u.cmd.Process != nil {
-		u.cmd.Process.Signal(os.Interrupt)
-	}
 }

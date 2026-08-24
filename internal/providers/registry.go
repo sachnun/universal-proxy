@@ -37,10 +37,9 @@ type Refresher interface {
 }
 
 var (
-	mu         sync.RWMutex
-	byName     = make(map[string]Provider)
-	order      []string
-	registered bool
+	mu     sync.RWMutex
+	byName = make(map[string]Provider)
+	order  []string
 )
 
 // Register adds a provider. Panics on duplicate names.
@@ -56,7 +55,6 @@ func Register(p Provider) {
 	byName[p.Name()] = p
 	order = append(order, p.Name())
 	sort.Strings(order)
-	registered = true
 }
 
 // All returns registered providers ordered by name.

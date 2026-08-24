@@ -106,7 +106,10 @@ func fetchServers() ([]turboServer, error) {
 
 	servers := make([]turboServer, 0, len(payload.Servers))
 	for _, s := range payload.Servers {
-		host := firstNonEmpty(joinHosts(s.Service.Hosts), s.Service.Hostname)
+		host := s.Service.Hostname
+		if len(s.Service.Hosts) > 0 {
+			host = s.Service.Hosts[0]
+		}
 		if host == "" {
 			continue
 		}
@@ -150,19 +153,4 @@ func buildStates(servers []turboServer) []*core.ProxyState {
 		states = append(states, state)
 	}
 	return states
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-func joinHosts(hs []string) string {
-	if len(hs) == 0 {
-		return ""
-	}
-	return hs[0]
 }

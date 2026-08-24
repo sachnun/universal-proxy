@@ -38,7 +38,7 @@ type SolveData struct {
 }
 
 func NewSolver(targetURL string) (*OneshotSolver, error) {
-	client, err := BuildClient(ClientConfig{})
+	client, err := BuildClient()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tls client: %w", err)
 	}
@@ -298,38 +298,13 @@ func deobfuscateScript(src string) (string, *DeobfuscateResult, error) {
 	return code, result, nil
 }
 
-type ClientConfig struct {
-	Proxy string
-
-	Profile string
-
-	TimeoutSeconds int
-}
-
-func BuildClient(cfg ClientConfig) (tls_client.HttpClient, error) {
-	profile := profiles.Chrome_133
-	if cfg.Profile != "" {
-		p, ok := profiles.MappedTLSClients[cfg.Profile]
-		if !ok {
-			return nil, fmt.Errorf("unknown tls profile %q", cfg.Profile)
-		}
-		profile = p
-	}
-
-	timeout := cfg.TimeoutSeconds
-	if timeout <= 0 {
-		timeout = 30
-	}
-
+func BuildClient() (tls_client.HttpClient, error) {
 	opts := []tls_client.HttpClientOption{
-		tls_client.WithTimeoutSeconds(timeout),
-		tls_client.WithClientProfile(profile),
+		tls_client.WithTimeoutSeconds(30),
+		tls_client.WithClientProfile(profiles.Chrome_133),
 		tls_client.WithCookieJar(tls_client.NewCookieJar()),
 		tls_client.WithRandomTLSExtensionOrder(),
 		tls_client.WithDisableHttp3(),
-	}
-	if cfg.Proxy != "" {
-		opts = append(opts, tls_client.WithProxyUrl(cfg.Proxy))
 	}
 
 	return tls_client.NewHttpClient(tls_client.NewNoopLogger(), opts...)

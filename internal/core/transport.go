@@ -170,6 +170,17 @@ func (t *RotatingProxyTransport) roundTripViaProxy(req *http.Request, body []byt
 }
 
 func (t *RotatingProxyTransport) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	return t.dialContext(ctx, network, addr, false)
+}
+
+// DialContextStrict is like DialContext but never falls back to a direct
+// connection. Explicit region requests use it so an empty or exhausted pool
+// returns an error instead of leaking the server's own egress IP.
+func (t *RotatingProxyTransport) DialContextStrict(ctx context.Context, network, addr string) (net.Conn, error) {
+	return t.dialContext(ctx, network, addr, true)
+}
+
+func (t *RotatingProxyTransport) dialContext(ctx context.Context, network, addr string, strict bool) (net.Conn, error) {
 	if t.warpTransport != nil && t.warpTransport.DialContext != nil {
 		return t.warpTransport.DialContext(ctx, network, addr)
 	}
@@ -179,23 +190,11 @@ func (t *RotatingProxyTransport) DialContext(ctx context.Context, network, addr 
 		return conn, nil
 	}
 
-	t.transportLogger().Printf("[DIRECT] CONNECT %s (no proxy)", addr)
-	return (&net.Dialer{Timeout: DialTimeout}).DialContext(ctx, network, addr)
-}
-
-// DialContextStrict is like DialContext but never falls back to a direct
-// connection. Explicit region requests use it so an empty or exhausted pool
-// returns an error instead of leaking the server's own egress IP.
-func (t *RotatingProxyTransport) DialContextStrict(ctx context.Context, network, addr string) (net.Conn, error) {
-	if t.warpTransport != nil && t.warpTransport.DialContext != nil {
-		return t.warpTransport.DialContext(ctx, network, addr)
-	}
-
-	conn, ok := t.dialThroughPool(ctx, network, addr)
-	if !ok {
+	if strict {
 		return nil, ErrNoUpstreamProxy
 	}
-	return conn, nil
+	t.transportLogger().Printf("[DIRECT] CONNECT %s (no proxy)", addr)
+	return (&net.Dialer{Timeout: DialTimeout}).DialContext(ctx, network, addr)
 }
 
 // dialThroughPool tries every candidate in the pool and returns the first
@@ -347,7 +346,7 @@ func (t *RotatingProxyTransport) warpEgress() (string, string) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), egressTimeout)
 		defer cancel()
-		if e, err := egressViaDial(ctx, t.warpTransport.DialContext); err == nil {
+		if e, err := EgressViaDial(ctx, t.warpTransport.DialContext, egressTimeout); err == nil {
 			t.warpIP = e.IP
 			t.warpISP = e.ISP
 		}
@@ -381,13 +380,18 @@ func snapshotRequestBody(req *http.Request) ([]byte, bool, error) {
 		return nil, true, err
 	}
 
+	setRequestBody(req, body)
+	return body, true, nil
+}
+
+// setRequestBody restores a buffered body onto req so it can be replayed
+// across retry attempts.
+func setRequestBody(req *http.Request, body []byte) {
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(body)), nil
 	}
 	req.ContentLength = int64(len(body))
-
-	return body, true, nil
 }
 
 func cloneRequestForProxy(req *http.Request, proxyURL *url.URL, body []byte, hasBody bool) *http.Request {
@@ -398,17 +402,12 @@ func cloneRequestForProxy(req *http.Request, proxyURL *url.URL, body []byte, has
 
 	attemptReq := req.Clone(ctx)
 
-	if !hasBody {
+	if hasBody {
+		setRequestBody(attemptReq, body)
+	} else {
 		attemptReq.Body = nil
 		attemptReq.GetBody = nil
-		return attemptReq
 	}
-
-	attemptReq.Body = io.NopCloser(bytes.NewReader(body))
-	attemptReq.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
-	}
-	attemptReq.ContentLength = int64(len(body))
 
 	return attemptReq
 }

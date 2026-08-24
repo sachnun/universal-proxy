@@ -31,16 +31,28 @@ var (
 // point it at a local server.
 var ipWhoisBase = "https://ipwho.is"
 
+// dialFuncFor returns the proxy's dial function, or nil when the proxy has
+// no dialer at all.
+func dialFuncFor(ps *ProxyState) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	if ps.DialContext != nil {
+		return ps.DialContext
+	}
+	if ps.URL != nil {
+		return func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return httpProxyConnect(ctx, ps.URL, addr)
+		}
+	}
+	return nil
+}
+
 // dialProxy opens a connection to addr through ps, preferring the proxy's
 // own DialContext and falling back to a URL-based HTTP CONNECT.
 func dialProxy(ctx context.Context, ps *ProxyState, addr string) (net.Conn, error) {
-	if ps.DialContext != nil {
-		return ps.DialContext(ctx, "tcp", addr)
+	d := dialFuncFor(ps)
+	if d == nil {
+		return nil, errors.New("no proxy dialer")
 	}
-	if ps.URL != nil {
-		return httpProxyConnect(ctx, ps.URL, addr)
-	}
-	return nil, errors.New("no proxy dialer")
+	return d(ctx, "tcp", addr)
 }
 
 // resolveEgress measures the public egress IP observed through the proxy
@@ -48,21 +60,16 @@ func dialProxy(ctx context.Context, ps *ProxyState, addr string) (net.Conn, erro
 // of the IP and are cached globally, so each is fetched at most once per
 // unique IP.
 func resolveEgress(ctx context.Context, ps *ProxyState) (EgressInfo, error) {
-	dial := ps.DialContext
-	if dial == nil {
-		if ps.URL == nil {
-			return EgressInfo{}, errors.New("no proxy dialer")
-		}
-		dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return httpProxyConnect(ctx, ps.URL, addr)
-		}
+	d := dialFuncFor(ps)
+	if d == nil {
+		return EgressInfo{}, errors.New("no proxy dialer")
 	}
-	return egressViaDial(ctx, dial)
+	return EgressViaDial(ctx, d, egressTimeout)
 }
 
-// egressViaDial performs a real HTTPS request through dial and resolves the
+// EgressViaDial performs a real HTTPS request through dial and resolves the
 // exit IP plus its ISP and country.
-func egressViaDial(ctx context.Context, dial func(ctx context.Context, network, addr string) (net.Conn, error)) (EgressInfo, error) {
+func EgressViaDial(ctx context.Context, dial func(ctx context.Context, network, addr string) (net.Conn, error), timeout time.Duration) (EgressInfo, error) {
 	transport := &http.Transport{
 		DialContext:         dial,
 		ForceAttemptHTTP2:   false,
@@ -70,9 +77,9 @@ func egressViaDial(ctx context.Context, dial func(ctx context.Context, network, 
 		IdleConnTimeout:     30 * time.Second,
 		TLSHandshakeTimeout: 5 * time.Second,
 	}
-	client := &http.Client{Transport: transport, Timeout: egressTimeout}
+	client := &http.Client{Transport: transport, Timeout: timeout}
 
-	egCtx, cancel := context.WithTimeout(ctx, egressTimeout)
+	egCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(egCtx, http.MethodGet, "https://api.ipify.org?format=json", nil)
@@ -85,7 +92,7 @@ func egressViaDial(ctx context.Context, dial func(ctx context.Context, network, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return EgressInfo{}, errEgressStatus
+		return EgressInfo{}, errors.New("egress endpoint returned non-200")
 	}
 
 	var out struct {
@@ -98,114 +105,90 @@ func egressViaDial(ctx context.Context, dial func(ctx context.Context, network, 
 		return EgressInfo{}, errors.New("empty egress IP")
 	}
 
-	return EgressInfo{IP: out.IP, ISP: ispForIP(egCtx, out.IP), Country: countryForIP(egCtx, out.IP)}, nil
+	isp, cc := whoisForIP(egCtx, out.IP)
+	return EgressInfo{IP: out.IP, ISP: isp, Country: cc}, nil
 }
 
-var errEgressStatus = errors.New("egress endpoint returned non-200")
-
-// ispForIP resolves the ISP for an egress IP using a direct (non-proxied)
-// lookup. Results are cached by IP.
-func ispForIP(ctx context.Context, ip string) string {
+// whoisForIP resolves the ISP and country for an egress IP with a single
+// direct (non-proxied) ipwho.is lookup. Results are cached per field by IP,
+// so a partial answer (ISP but no country) is refetched until complete.
+func whoisForIP(ctx context.Context, ip string) (isp, cc string) {
 	if ip == "" {
-		return ""
+		return "", ""
 	}
 
 	ispCacheMu.Lock()
-	if isp, ok := ispCache[ip]; ok {
-		ispCacheMu.Unlock()
-		return isp
-	}
+	isp, ispOK := ispCache[ip]
+	cc, ccOK := countryCache[ip]
 	ispCacheMu.Unlock()
+	if ispOK && ccOK {
+		return isp, cc
+	}
 
 	client := NewProviderHTTPClient()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ipWhoisBase+"/"+ip, nil)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-
-	var out struct {
-		Connection struct {
-			ISP string `json:"isp"`
-			Org string `json:"org"`
-		} `json:"connection"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return ""
-	}
-
-	isp := out.Connection.ISP
-	if isp == "" {
-		isp = out.Connection.Org
-	}
-	if isp == "" {
-		return ""
-	}
-
-	ispCacheMu.Lock()
-	ispCache[ip] = isp
-	ispCacheMu.Unlock()
-	return isp
-}
-
-// countryForIP resolves the ISO 3166-1 alpha-2 country code for an egress IP
-// using a direct (non-proxied) lookup. Results are cached by IP.
-func countryForIP(ctx context.Context, ip string) string {
-	if ip == "" {
-		return ""
-	}
-
-	ispCacheMu.Lock()
-	if cc, ok := countryCache[ip]; ok {
-		ispCacheMu.Unlock()
-		return cc
-	}
-	ispCacheMu.Unlock()
-
-	client := NewProviderHTTPClient()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ipWhoisBase+"/"+ip, nil)
-	if err != nil {
-		return ""
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
+		return "", ""
 	}
 
 	var out struct {
 		Success     bool   `json:"success"`
 		CountryCode string `json:"country_code"`
+		Connection  struct {
+			ISP string `json:"isp"`
+			Org string `json:"org"`
+		} `json:"connection"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return ""
-	}
-	if !out.Success {
-		return ""
+		return "", ""
 	}
 
-	cc := strings.ToUpper(strings.TrimSpace(out.CountryCode))
-	if len(cc) != 2 {
-		return ""
+	isp = out.Connection.ISP
+	if isp == "" {
+		isp = out.Connection.Org
 	}
-	for i := 0; i < len(cc); i++ {
-		if cc[i] < 'A' || cc[i] > 'Z' {
-			return ""
+	if out.Success {
+		cc = strings.ToUpper(strings.TrimSpace(out.CountryCode))
+		if len(cc) != 2 {
+			cc = ""
+		} else {
+			for i := 0; i < len(cc); i++ {
+				if cc[i] < 'A' || cc[i] > 'Z' {
+					cc = ""
+					break
+				}
+			}
 		}
 	}
 
 	ispCacheMu.Lock()
-	countryCache[ip] = cc
+	if isp != "" {
+		ispCache[ip] = isp
+	}
+	if cc != "" {
+		countryCache[ip] = cc
+	}
 	ispCacheMu.Unlock()
+	return isp, cc
+}
+
+// ispForIP resolves the ISP for an egress IP. Results are cached by IP.
+func ispForIP(ctx context.Context, ip string) string {
+	isp, _ := whoisForIP(ctx, ip)
+	return isp
+}
+
+// countryForIP resolves the ISO 3166-1 alpha-2 country code for an egress
+// IP. Results are cached by IP.
+func countryForIP(ctx context.Context, ip string) string {
+	_, cc := whoisForIP(ctx, ip)
 	return cc
 }

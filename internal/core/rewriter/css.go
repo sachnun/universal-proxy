@@ -9,13 +9,9 @@ import (
 	"github.com/tdewolff/parse/v2/css"
 )
 
-type CSSRewriter struct{}
-
-func (r *CSSRewriter) SupportedContentType() string {
-	return "text/css"
-}
-
-func (r *CSSRewriter) Rewrite(body []byte, domain, proxyBase string) []byte {
+// RewriteCSS rewrites a text/css body so all URLs route through the proxy
+// base.
+func RewriteCSS(body []byte, domain, proxyBase string) []byte {
 	input := parse.NewInputBytes(body)
 	l := css.NewLexer(input)
 	var out bytes.Buffer

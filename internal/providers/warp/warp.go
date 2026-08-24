@@ -50,23 +50,27 @@ func waitForDialers(ctx context.Context) {
 
 func (p *Provider) startDefault(host *providers.Host, configPath string, logger *log.Logger) {
 	psiphonDial := pickPsiphonDialer()
-	u, dialer, err := startWarpUsque("40000", "6443", configPath, psiphonDial, logger)
+	dialer, err := startWarpUsque("40000", "6443", configPath, psiphonDial, logger)
 	if err != nil {
 		logger.Printf("WARP: start failed (%v)", err)
 		return
 	}
-	_ = u
 
-	wt := core.NewUTLSTransport(dialer.DialContext)
-	wt.MaxIdleConns = 100
-	wt.MaxIdleConnsPerHost = 10
+	addWarpPool(host, "WARP", dialer.DialContext, 100, 10, logger)
+	logger.Printf("WARP: active, path /warp or auth user \"warp\"")
+}
+
+// addWarpPool registers a named pool whose transport tunnels through a usque
+// SOCKS dialer with a uTLS front transport.
+func addWarpPool(host *providers.Host, name string, dial func(context.Context, string, string) (net.Conn, error), maxIdle, maxPerHost int, logger *log.Logger) {
+	wt := core.NewUTLSTransport(dial)
+	wt.MaxIdleConns = maxIdle
+	wt.MaxIdleConnsPerHost = maxPerHost
 	wt.ResponseHeaderTimeout = 20 * time.Second
 
-	warpTransport := core.NewRotatingProxyTransport(nil)
-	warpTransport.SetWarpTransport(wt)
-
-	host.AddNamed("WARP", core.NewProxyPool(logger, nil), warpTransport)
-	logger.Printf("WARP: active, path /warp or auth user \"warp\"")
+	tr := core.NewRotatingProxyTransport(nil)
+	tr.SetWarpTransport(wt)
+	host.AddNamed(name, core.NewProxyPool(logger, nil), tr)
 }
 
 func (p *Provider) startRegional(ctx context.Context, host *providers.Host, configPath string, logger *log.Logger) {
@@ -92,22 +96,13 @@ func (p *Provider) startRegional(ctx context.Context, host *providers.Host, conf
 		wg.Add(1)
 		go func(inst warpInstance) {
 			defer wg.Done()
-			rU, rDialer, err := startWarpUsque(fmt.Sprintf("%d", inst.port), fmt.Sprintf("%d", inst.fwdPort), configPath, inst.dialer.DialContext, logger)
+			rDialer, err := startWarpUsque(fmt.Sprintf("%d", inst.port), fmt.Sprintf("%d", inst.fwdPort), configPath, inst.dialer.DialContext, logger)
 			if err != nil {
 				logger.Printf("WARP/%s: start failed (%v)", inst.region, err)
 				return
 			}
-			_ = rU
 
-			rWt := core.NewUTLSTransport(rDialer.DialContext)
-			rWt.MaxIdleConns = 50
-			rWt.MaxIdleConnsPerHost = 5
-			rWt.ResponseHeaderTimeout = 20 * time.Second
-
-			rTransport := core.NewRotatingProxyTransport(nil)
-			rTransport.SetWarpTransport(rWt)
-
-			host.AddNamed("WARP/"+inst.region, core.NewProxyPool(logger, nil), rTransport)
+			addWarpPool(host, "WARP/"+inst.region, rDialer.DialContext, 50, 5, logger)
 			logger.Printf("WARP/%s: active, path /warp/%s or auth user \"warp/%s\"", inst.region, inst.region, inst.region)
 		}(inst)
 	}
@@ -144,22 +139,13 @@ func (p *Provider) startRegional(ctx context.Context, host *providers.Host, conf
 		wg2.Add(1)
 		go func(c proxiflyWarp, port, fwdPort int) {
 			defer wg2.Done()
-			rU, rDialer, err := startWarpUsque(fmt.Sprintf("%d", port), fmt.Sprintf("%d", fwdPort), configPath, c.transport.DialContext, logger)
+			rDialer, err := startWarpUsque(fmt.Sprintf("%d", port), fmt.Sprintf("%d", fwdPort), configPath, c.transport.DialContext, logger)
 			if err != nil {
 				logger.Printf("WARP/%s: start failed (%v)", c.upper, err)
 				return
 			}
-			_ = rU
 
-			rWt := core.NewUTLSTransport(rDialer.DialContext)
-			rWt.MaxIdleConns = 50
-			rWt.MaxIdleConnsPerHost = 5
-			rWt.ResponseHeaderTimeout = 20 * time.Second
-
-			rTransport := core.NewRotatingProxyTransport(nil)
-			rTransport.SetWarpTransport(rWt)
-
-			host.AddNamed("WARP/"+c.upper, core.NewProxyPool(logger, nil), rTransport)
+			addWarpPool(host, "WARP/"+c.upper, rDialer.DialContext, 50, 5, logger)
 			logger.Printf("WARP/%s: active (proxifly), path /warp/%s or auth user \"warp/%s\"", c.upper, c.upper, c.upper)
 		}(c, port+i, fwdPort+i)
 	}

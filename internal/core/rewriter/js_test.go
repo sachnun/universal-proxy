@@ -6,7 +6,7 @@ import (
 )
 
 func TestJSRewriter_Rewrite(t *testing.T) {
-	r := &JSRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
@@ -119,7 +119,7 @@ func TestJSRewriter_Rewrite(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := string(r.Rewrite([]byte(tt.input), domain, proxyBase))
+			result := string(RewriteJS([]byte(tt.input), domain, proxyBase))
 
 			for _, s := range tt.contains {
 				if !strings.Contains(result, s) {
@@ -130,15 +130,8 @@ func TestJSRewriter_Rewrite(t *testing.T) {
 	}
 }
 
-func TestJSRewriter_SupportedContentType(t *testing.T) {
-	r := &JSRewriter{}
-	if r.SupportedContentType() != "application/javascript" {
-		t.Errorf("Expected application/javascript, got %s", r.SupportedContentType())
-	}
-}
-
 func TestJSRewriter_ComplexScript(t *testing.T) {
-	r := &JSRewriter{}
+
 	domain := "example.com"
 	proxyBase := ""
 
@@ -165,7 +158,7 @@ navigator.sendBeacon('/analytics');
 importScripts('/utils.js');
 `
 
-	result := string(r.Rewrite([]byte(input), domain, proxyBase))
+	result := string(RewriteJS([]byte(input), domain, proxyBase))
 
 	expected := []string{
 		"/example.com/lib/framework.js",

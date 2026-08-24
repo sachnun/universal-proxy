@@ -2,7 +2,6 @@ package warp
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -10,15 +9,15 @@ import (
 	"time"
 )
 
-func startMasqueProxy(psiphonDial func(ctx context.Context, network, addr string) (net.Conn, error), port string, logger *log.Logger) (string, error) {
-	listenAddr := "127.0.0.1:" + port
-	return startTCPForwarder(psiphonDial, "162.159.198.2:443", listenAddr, logger)
+func startMasqueProxy(psiphonDial func(ctx context.Context, network, addr string) (net.Conn, error), port string, logger *log.Logger) {
+	startTCPForwarder(psiphonDial, "162.159.198.2:443", "127.0.0.1:"+port, logger)
 }
 
-func startTCPForwarder(psiphonDial func(ctx context.Context, network, addr string) (net.Conn, error), targetAddr, listenAddr string, logger *log.Logger) (string, error) {
+func startTCPForwarder(psiphonDial func(ctx context.Context, network, addr string) (net.Conn, error), targetAddr, listenAddr string, logger *log.Logger) {
 	l, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		return "", fmt.Errorf("tcp forwarder listen: %w", err)
+		logger.Printf("MASQUE proxy listen %s: %v", listenAddr, err)
+		return
 	}
 
 	go func() {
@@ -32,7 +31,6 @@ func startTCPForwarder(psiphonDial func(ctx context.Context, network, addr strin
 	}()
 
 	logger.Printf("MASQUE proxy: %s -> %s", listenAddr, targetAddr)
-	return listenAddr, nil
 }
 
 func handleForward(client net.Conn, psiphonDial func(ctx context.Context, network, addr string) (net.Conn, error), target string, logger *log.Logger) {

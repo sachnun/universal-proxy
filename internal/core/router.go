@@ -71,19 +71,7 @@ func (r *PoolRouter) Get(name string) *NamedPool {
 }
 
 func (r *PoolRouter) Has(name string) bool {
-	if r == nil || name == "" {
-		return false
-	}
-
-	upper := strings.ToUpper(name)
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	for _, p := range r.pools {
-		if strings.ToUpper(p.Name) == upper {
-			return true
-		}
-	}
-	return false
+	return r.Get(name) != nil
 }
 
 func (r *PoolRouter) Default() http.RoundTripper {

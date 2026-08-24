@@ -7,9 +7,12 @@ import (
 	"time"
 )
 
-// ValidatorConfig tunes the background proxy validator. Every proxy that a
-// provider fetches must pass a probe before it enters rotation; ready
-// proxies are re-probed periodically and demoted on failure.
+// DefaultTrafficFailThreshold is the consecutive real-traffic failure count
+// that demotes a ready proxy back to quarantine.
+const DefaultTrafficFailThreshold = 3
+
+// ValidatorConfig tunes the background proxy validator. Zero fields fall
+// back to the defaults below; only tests override them.
 type ValidatorConfig struct {
 	// ProbeTimeout bounds a single probe (reachability + relay check).
 	ProbeTimeout time.Duration
@@ -29,21 +32,6 @@ type ValidatorConfig struct {
 	// TrafficFailThreshold is the number of consecutive real-traffic
 	// failures that demote a ready proxy back to quarantine.
 	TrafficFailThreshold int
-}
-
-// DefaultValidatorConfig returns the validator tuning. Everything is
-// automatic: fixed defaults tuned for stability, no configuration needed.
-func DefaultValidatorConfig() ValidatorConfig {
-	return ValidatorConfig{
-		ProbeTimeout:         DialTimeout,
-		Concurrency:          100,
-		CheckInterval:        time.Minute,
-		StaleAfter:           5 * time.Minute,
-		MaxFails:             3,
-		BackoffBase:          15 * time.Second,
-		BackoffMax:           5 * time.Minute,
-		TrafficFailThreshold: 3,
-	}
 }
 
 // quarantineEntry tracks a proxy waiting for a retry probe.
@@ -72,9 +60,6 @@ type ProxyValidator struct {
 	quarantine map[string]*quarantineEntry
 	graduate   func([]*ProxyState)
 	started    bool
-	stop       chan struct{}
-	stopOnce   sync.Once
-	workers    sync.WaitGroup
 
 	jobs chan *ProxyState
 }
@@ -107,7 +92,7 @@ func NewProxyValidator(logger *log.Logger, config ValidatorConfig) *ProxyValidat
 		config.BackoffMax = 5 * time.Minute
 	}
 	if config.TrafficFailThreshold <= 0 {
-		config.TrafficFailThreshold = 3
+		config.TrafficFailThreshold = DefaultTrafficFailThreshold
 	}
 
 	return &ProxyValidator{
@@ -142,30 +127,12 @@ func (v *ProxyValidator) startLocked() {
 		return
 	}
 	v.started = true
-	v.stop = make(chan struct{})
 	v.jobs = make(chan *ProxyState, v.config.Concurrency*2)
 
 	for i := 0; i < v.config.Concurrency; i++ {
-		v.workers.Add(1)
 		go v.worker()
 	}
-	v.workers.Add(1)
 	go v.scanLoop()
-}
-
-// Stop shuts down the workers and the scan loop. Pending jobs are dropped.
-func (v *ProxyValidator) Stop() {
-	v.stopOnce.Do(func() {
-		v.mu.Lock()
-		if !v.started {
-			v.mu.Unlock()
-			return
-		}
-		v.started = false
-		close(v.stop)
-		v.mu.Unlock()
-		v.workers.Wait()
-	})
 }
 
 // Submit stages a freshly fetched list for validation. Keys already READY
@@ -220,29 +187,17 @@ func (v *ProxyValidator) OnTrafficFailure(key string) {
 }
 
 func (v *ProxyValidator) worker() {
-	defer v.workers.Done()
-	for {
-		select {
-		case <-v.stop:
-			return
-		case ps := <-v.jobs:
-			lat, ok := v.probe(ps)
-			v.handleResult(ps, lat, ok)
-		}
+	for ps := range v.jobs {
+		lat, ok := v.probe(ps)
+		v.handleResult(ps, lat, ok)
 	}
 }
 
 func (v *ProxyValidator) scanLoop() {
-	defer v.workers.Done()
 	ticker := time.NewTicker(v.config.CheckInterval)
 	defer ticker.Stop()
-	for {
-		select {
-		case <-v.stop:
-			return
-		case <-ticker.C:
-			v.scan()
-		}
+	for range ticker.C {
+		v.scan()
 	}
 }
 

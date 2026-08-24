@@ -19,11 +19,7 @@ func ToProxyURL(rawURL, domain, proxyBase string) string {
 	}
 
 	if strings.HasPrefix(rawURL, "//") {
-		externalDomain := strings.TrimPrefix(rawURL, "//")
-		if idx := strings.Index(externalDomain, "/"); idx != -1 {
-			return proxyBase + "/" + externalDomain
-		}
-		return proxyBase + "/" + externalDomain
+		return proxyBase + "/" + strings.TrimPrefix(rawURL, "//")
 	}
 
 	if strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {

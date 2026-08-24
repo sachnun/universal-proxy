@@ -21,33 +21,23 @@ import (
 )
 
 type ProxyHandler struct {
-	htmlRewriter *rewriter.HTMLRewriter
-	cssRewriter  *rewriter.CSSRewriter
-	jsRewriter   *rewriter.JSRewriter
-	logger       *log.Logger
-	transport    http.RoundTripper
-	router       *PoolRouter
-	tcpProxy     string
+	logger    *log.Logger
+	transport http.RoundTripper
+	router    *PoolRouter
+	tcpProxy  string
 }
 
-func NewProxyHandler(logger *log.Logger, transportOrRouter interface{}, tcpProxy string) *ProxyHandler {
+func NewProxyHandler(logger *log.Logger, router *PoolRouter, tcpProxy string) *ProxyHandler {
 	if logger == nil {
 		logger = log.Default()
 	}
 
 	h := &ProxyHandler{
-		htmlRewriter: &rewriter.HTMLRewriter{},
-		cssRewriter:  &rewriter.CSSRewriter{},
-		jsRewriter:   &rewriter.JSRewriter{},
-		logger:       logger,
+		logger: logger,
+		router: router,
 	}
-
-	switch v := transportOrRouter.(type) {
-	case *PoolRouter:
-		h.router = v
-		h.transport = v.Default()
-	case http.RoundTripper:
-		h.transport = v
+	if router != nil {
+		h.transport = router.Default()
 	}
 
 	h.tcpProxy = tcpProxy
@@ -106,7 +96,11 @@ func (h *ProxyHandler) handleRewriteProxy(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	proxy := h.createProxy(domain, path, query, transport, poolName)
+	proxyBase := ""
+	if poolName != "" {
+		proxyBase = "/" + strings.ToLower(poolName)
+	}
+	proxy := h.createProxy("https", domain, path, query, transport, proxyBase)
 	proxy.ServeHTTP(w, r)
 }
 
@@ -115,19 +109,19 @@ func (h *ProxyHandler) writeIndexPage(w http.ResponseWriter, r *http.Request) {
 
 	buf.WriteString("Usage\n")
 	buf.WriteString("─────\n")
-	buf.WriteString(fmt.Sprintf("  Rewrite   /ipwho.is/path\n"))
-	buf.WriteString(fmt.Sprintf("            curl http://%s/ipwho.is\n", r.Host))
-	buf.WriteString(fmt.Sprintf("\n  Proxy     curl -x http://%s http://ipwho.is\n", r.Host))
+	fmt.Fprintf(&buf, "  Rewrite   /ipwho.is/path\n")
+	fmt.Fprintf(&buf, "            curl http://%s/ipwho.is\n", r.Host)
+	fmt.Fprintf(&buf, "\n  Proxy     curl -x http://%s http://ipwho.is\n", r.Host)
 	if h.tcpProxy != "" {
-		buf.WriteString(fmt.Sprintf("            curl -x http://%s https://ipwho.is\n", h.tcpProxy))
+		fmt.Fprintf(&buf, "            curl -x http://%s https://ipwho.is\n", h.tcpProxy)
 	}
-	buf.WriteString(fmt.Sprintf("\n  Region    curl http://%s/us/ipwho.is\n", r.Host))
+	fmt.Fprintf(&buf, "\n  Region    curl http://%s/us/ipwho.is\n", r.Host)
 	if h.tcpProxy != "" {
-		buf.WriteString(fmt.Sprintf("            curl -x http://us@%s https://ipwho.is\n", h.tcpProxy))
+		fmt.Fprintf(&buf, "            curl -x http://us@%s https://ipwho.is\n", h.tcpProxy)
 	}
-	buf.WriteString(fmt.Sprintf("\n  WARP      curl http://%s/warp/ipwho.is\n", r.Host))
+	fmt.Fprintf(&buf, "\n  WARP      curl http://%s/warp/ipwho.is\n", r.Host)
 	if h.tcpProxy != "" {
-		buf.WriteString(fmt.Sprintf("            curl -x http://warp@%s https://ipwho.is\n", h.tcpProxy))
+		fmt.Fprintf(&buf, "            curl -x http://warp@%s https://ipwho.is\n", h.tcpProxy)
 	}
 
 	if h.router != nil {
@@ -139,15 +133,15 @@ func (h *ProxyHandler) writeIndexPage(w http.ResponseWriter, r *http.Request) {
 			for i, p := range stats.Pools {
 				entry := fmt.Sprintf("%s(%d)", p.Name, p.ProxyCount)
 				if i%5 == 0 {
-					buf.WriteString(fmt.Sprintf("  %-*s", -colWidth, entry))
+					fmt.Fprintf(&buf, "  %-*s", -colWidth, entry)
 				} else {
-					buf.WriteString(fmt.Sprintf("%-*s", colWidth, entry))
+					fmt.Fprintf(&buf, "%-*s", colWidth, entry)
 				}
 				if i%5 == 4 || i == len(stats.Pools)-1 {
 					buf.WriteString("\n")
 				}
 			}
-			buf.WriteString(fmt.Sprintf("\nTotal: %d proxies\n", stats.TotalProxies))
+			fmt.Fprintf(&buf, "\nTotal: %d proxies\n", stats.TotalProxies)
 		}
 	}
 
@@ -173,7 +167,7 @@ func (h *ProxyHandler) handleForwardProxy(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	proxy := h.createForwardProxy(scheme, domain, path, r.URL.RawQuery, transport)
+	proxy := h.createProxy(scheme, domain, path, r.URL.RawQuery, transport, "")
 	proxy.ServeHTTP(w, r)
 }
 
@@ -393,24 +387,24 @@ func isResolvable(domain string) bool {
 	return resolved
 }
 
-func (h *ProxyHandler) createProxy(domain, path, query string, transport http.RoundTripper, poolName string) *httputil.ReverseProxy {
-	proxyBase := ""
-	if poolName != "" {
-		proxyBase = "/" + strings.ToLower(poolName)
-	}
-
-	return &httputil.ReverseProxy{
+func (h *ProxyHandler) createProxy(scheme, domain, path, query string, transport http.RoundTripper, proxyBase string) *httputil.ReverseProxy {
+	rp := &httputil.ReverseProxy{
 		ErrorLog:  log.New(io.Discard, "", 0),
 		Transport: transport,
 		Director: func(req *http.Request) {
-			req.URL.Scheme = "https"
+			req.URL.Scheme = scheme
 			req.URL.Host = domain
 			req.URL.Path = path
 			req.URL.RawQuery = query
 
 			rewriter.RewriteRequestHeaders(req, domain)
 		},
-		ModifyResponse: func(resp *http.Response) error {
+	}
+
+	// Rewrite mode (proxyBase != "") rewrites the response so all URLs route
+	// through the proxy base; the forward proxy passes responses through.
+	if proxyBase != "" {
+		rp.ModifyResponse = func(resp *http.Response) error {
 			resp.Header.Set("Cache-Control", "no-store")
 			resp.Header.Set("Pragma", "no-cache")
 			resp.Header.Set("Expires", "0")
@@ -434,11 +428,11 @@ func (h *ProxyHandler) createProxy(domain, path, query string, transport http.Ro
 			var newBody []byte
 			switch {
 			case strings.Contains(contentType, "text/html"):
-				newBody = h.htmlRewriter.Rewrite(body, domain, proxyBase)
+				newBody = rewriter.RewriteHTML(body, domain, proxyBase)
 			case strings.Contains(contentType, "text/css"):
-				newBody = h.cssRewriter.Rewrite(body, domain, proxyBase)
+				newBody = rewriter.RewriteCSS(body, domain, proxyBase)
 			case strings.Contains(contentType, "javascript"):
-				newBody = h.jsRewriter.Rewrite(body, domain, proxyBase)
+				newBody = rewriter.RewriteJS(body, domain, proxyBase)
 			default:
 				newBody = body
 			}
@@ -449,23 +443,10 @@ func (h *ProxyHandler) createProxy(domain, path, query string, transport http.Ro
 			resp.Header.Del("Content-Encoding")
 
 			return nil
-		},
+		}
 	}
-}
 
-func (h *ProxyHandler) createForwardProxy(scheme, domain, path, query string, transport http.RoundTripper) *httputil.ReverseProxy {
-	return &httputil.ReverseProxy{
-		ErrorLog:  log.New(io.Discard, "", 0),
-		Transport: transport,
-		Director: func(req *http.Request) {
-			req.URL.Scheme = scheme
-			req.URL.Host = domain
-			req.URL.Path = path
-			req.URL.RawQuery = query
-
-			rewriter.RewriteRequestHeaders(req, domain)
-		},
-	}
+	return rp
 }
 
 func (h *ProxyHandler) readResponseBody(resp *http.Response) ([]byte, error) {

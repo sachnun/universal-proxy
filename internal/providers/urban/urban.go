@@ -89,16 +89,18 @@ func (p *Provider) Start(ctx context.Context, host *providers.Host, logger *log.
 	p.limiter = rate.NewLimiter(mintRate, mintBurst)
 	p.cache = make(map[string]proxyToken)
 
-	if err := p.mintSession(); err != nil {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.mintSessionLocked(); err != nil {
 		logger.Printf("Urban: session setup failed: %v", err)
 		return err
 	}
-	countries, err := p.fetchCountries()
+	countries, err := p.fetchCountriesLocked()
 	if err != nil {
 		logger.Printf("Urban: country list failed: %v", err)
 		return err
 	}
-	p.distribute(countries)
+	p.distributeLocked(countries)
 	return nil
 }
 
@@ -123,12 +125,6 @@ func (p *Provider) Refresh(ctx context.Context) error {
 
 func (p *Provider) secExpiredLocked() bool {
 	return p.sec == "" || time.Until(p.secExp) < 5*time.Minute
-}
-
-func (p *Provider) mintSession() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.mintSessionLocked()
 }
 
 func (p *Provider) mintSessionLocked() error {
@@ -165,12 +161,6 @@ func (p *Provider) mintSessionLocked() error {
 	p.sec = accs.Value
 	p.secExp = time.UnixMilli(accs.ExpirationTime)
 	return nil
-}
-
-func (p *Provider) fetchCountries() ([]countryEntry, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.fetchCountriesLocked()
 }
 
 func (p *Provider) fetchCountriesLocked() ([]countryEntry, error) {
@@ -240,16 +230,6 @@ func (p *Provider) fetchCountriesLocked() ([]countryEntry, error) {
 	return out, nil
 }
 
-func (p *Provider) distribute(countries []countryEntry) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.distributeLocked(countries)
-}
-
-// distributeLocked adds the Urban fleet to the pools through the background
-// validator. Each proxy is probed end-to-end (CONNECT + relayed HTTP request)
-// before graduation so only servers that actually relay traffic go into
-// rotation; token minting is paced by the limiter and memoized for 60s.
 func (p *Provider) distributeLocked(countries []countryEntry) {
 	states := make([]*core.ProxyState, 0, len(countries))
 	for _, c := range countries {
