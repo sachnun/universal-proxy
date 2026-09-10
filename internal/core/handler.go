@@ -78,10 +78,14 @@ func (h *ProxyHandler) resolveTransport(r *http.Request) (http.RoundTripper, err
 }
 
 func (h *ProxyHandler) handleRewriteProxy(w http.ResponseWriter, r *http.Request) {
-	poolName, domain, path, query := h.parsePoolRequest(r)
+	poolName, scheme, domain, path, query := h.parsePoolRequest(r)
 	if domain == "" {
 		h.writeIndexPage(w, r)
 		return
+	}
+
+	if scheme != "http" && scheme != "https" {
+		scheme = "https"
 	}
 
 	if !isResolvable(domain) {
@@ -100,7 +104,7 @@ func (h *ProxyHandler) handleRewriteProxy(w http.ResponseWriter, r *http.Request
 	if poolName != "" {
 		proxyBase = "/" + strings.ToLower(poolName)
 	}
-	proxy := h.createProxy("https", domain, path, query, transport, proxyBase)
+	proxy := h.createProxy(scheme, domain, path, query, transport, proxyBase)
 	proxy.ServeHTTP(w, r)
 }
 
@@ -110,7 +114,9 @@ func (h *ProxyHandler) writeIndexPage(w http.ResponseWriter, r *http.Request) {
 	buf.WriteString("Usage\n")
 	buf.WriteString("─────\n")
 	fmt.Fprintf(&buf, "  Rewrite   /ipwho.is/path\n")
+	fmt.Fprintf(&buf, "            /https://ipwho.is/path\n")
 	fmt.Fprintf(&buf, "            curl http://%s/ipwho.is\n", r.Host)
+	fmt.Fprintf(&buf, "            curl http://%s/https://ipwho.is/path\n", r.Host)
 	fmt.Fprintf(&buf, "\n  Proxy     curl -x http://%s http://ipwho.is\n", r.Host)
 	if h.tcpProxy != "" {
 		fmt.Fprintf(&buf, "            curl -x http://%s https://ipwho.is\n", h.tcpProxy)
@@ -255,57 +261,130 @@ func (h *ProxyHandler) handleConnectTunnel(w http.ResponseWriter, r *http.Reques
 	wg.Wait()
 }
 
-func (h *ProxyHandler) parsePoolRequest(r *http.Request) (pool, domain, path, query string) {
+func (h *ProxyHandler) parsePoolRequest(r *http.Request) (pool, scheme, domain, path, query string) {
+	scheme = "https"
+	query = r.URL.RawQuery
 	fullPath := strings.TrimPrefix(r.URL.Path, "/")
-	parts := strings.SplitN(fullPath, "/", 3)
-
-	if len(parts) < 1 || parts[0] == "" {
-		return "", "", "", ""
+	if fullPath == "" {
+		return "", "", "", "", query
 	}
 
-	first := parts[0]
-
-	if h.router != nil && !strings.Contains(first, ".") && h.router.Has(strings.ToUpper(first)) {
-		pool = strings.ToUpper(first)
-		if len(parts) > 1 {
-			second := parts[1]
-			compoundKey := strings.ToUpper(first + "/" + second)
-			if !strings.Contains(second, ".") && h.router.Has(compoundKey) {
-				pool = compoundKey
-				if len(parts) > 2 {
-					dp := strings.SplitN(parts[2], "/", 2)
-					domain = dp[0]
-					path = "/"
-					if len(dp) > 1 {
-						path = "/" + dp[1]
-					}
+	remainder := fullPath
+	if h.router != nil {
+		best := ""
+		for _, name := range h.router.Names() {
+			if best != "" && len(name) <= len(best) {
+				continue
+			}
+			if strings.EqualFold(fullPath, name) {
+				if len(name) > len(best) {
+					best = name
 				}
-			} else {
-				domain = second
-				path = "/"
-				if len(parts) > 2 {
-					path = "/" + strings.Join(parts[2:], "/")
+				continue
+			}
+			if len(fullPath) > len(name) && fullPath[len(name)] == '/' && strings.EqualFold(fullPath[:len(name)], name) {
+				if len(name) > len(best) {
+					best = name
 				}
 			}
 		}
-	} else {
-		domain = first
-		path = "/"
-		if len(parts) > 1 {
-			path = "/" + strings.Join(parts[1:], "/")
+		if best != "" {
+			pool = strings.ToUpper(best)
+			if len(fullPath) == len(best) {
+				return pool, scheme, "", "", query
+			}
+			remainder = fullPath[len(best)+1:]
+			if remainder == "" {
+				return pool, scheme, "", "", query
+			}
 		}
 	}
 
-	if domain != "" && !isValidDomain(domain) {
-		return "", "", "", ""
+	rest := remainder
+	lower := strings.ToLower(rest)
+	switch {
+	case strings.HasPrefix(lower, "https://"):
+		scheme = "https"
+		rest = rest[len("https://"):]
+	case strings.HasPrefix(lower, "http://"):
+		scheme = "http"
+		rest = rest[len("http://"):]
+	case strings.HasPrefix(lower, "https:/"):
+		scheme = "https"
+		rest = rest[len("https:/"):]
+		rest = strings.TrimPrefix(rest, "/")
+	case strings.HasPrefix(lower, "http:/"):
+		scheme = "http"
+		rest = rest[len("http:/"):]
+		rest = strings.TrimPrefix(rest, "/")
+	case strings.HasPrefix(lower, "https:"):
+		scheme = "https"
+		rest = rest[len("https:"):]
+		rest = strings.TrimLeft(rest, "/")
+	case strings.HasPrefix(lower, "http:"):
+		scheme = "http"
+		rest = rest[len("http:"):]
+		rest = strings.TrimLeft(rest, "/")
+	}
+	rest = strings.TrimPrefix(rest, "/")
+	if rest == "" {
+		return "", "", "", "", ""
 	}
 
-	query = r.URL.RawQuery
-	return pool, domain, path, query
+	domain = rest
+	path = "/"
+	if i := strings.Index(rest, "/"); i != -1 {
+		domain = rest[:i]
+		path = rest[i:]
+		if path == "" {
+			path = "/"
+		}
+	}
+	if domain == "" {
+		return "", "", "", "", ""
+	}
+	if j := strings.LastIndex(domain, "@"); j != -1 {
+		domain = domain[j+1:]
+		if domain == "" {
+			return "", "", "", "", ""
+		}
+	}
+
+	if !isValidDomain(domain) {
+		return "", "", "", "", ""
+	}
+
+	return pool, scheme, domain, path, query
+}
+
+func hostnameOnly(s string) string {
+	if i := strings.LastIndex(s, "@"); i != -1 {
+		s = s[i+1:]
+	}
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		return h
+	}
+	if i := strings.LastIndex(s, ":"); i != -1 {
+		portPart := s[i+1:]
+		if portPart != "" {
+			numeric := true
+			for _, c := range portPart {
+				if c < '0' || c > '9' {
+					numeric = false
+					break
+				}
+			}
+			if numeric {
+				return s[:i]
+			}
+		}
+	}
+	return s
 }
 
 func isValidDomain(s string) bool {
-	ascii, err := idna.ToASCII(s)
+	host := hostnameOnly(s)
+	ascii, err := idna.ToASCII(host)
 	if err != nil || ascii == "" {
 		return false
 	}
@@ -347,6 +426,11 @@ var resolvCache = struct {
 const dnsLookupTimeout = 2 * time.Second
 
 func isResolvable(domain string) bool {
+	host := hostnameOnly(domain)
+	if host == "" {
+		return false
+	}
+	domain = host
 	resolvCache.mu.Lock()
 	if e, ok := resolvCache.entries[domain]; ok {
 		ttl := resolvCache.ttlOK

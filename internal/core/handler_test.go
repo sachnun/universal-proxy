@@ -317,7 +317,7 @@ func TestParsePoolRequest_WarpRejectsInvalidDomain(t *testing.T) {
 	h := &ProxyHandler{router: router}
 
 	req := httptest.NewRequest(http.MethodGet, "/warp/id/ipwho.is", nil)
-	pool, domain, _, _ := h.parsePoolRequest(req)
+	pool, _, domain, _, _ := h.parsePoolRequest(req)
 
 	if pool != "" {
 		t.Errorf("expected empty pool, got %s", pool)
@@ -334,7 +334,7 @@ func TestParsePoolRequest_WarpWithValidDomain(t *testing.T) {
 	h := &ProxyHandler{router: router}
 
 	req := httptest.NewRequest(http.MethodGet, "/warp/example.com/path", nil)
-	pool, domain, path, _ := h.parsePoolRequest(req)
+	pool, _, domain, path, _ := h.parsePoolRequest(req)
 
 	if pool != "WARP" {
 		t.Errorf("expected pool=WARP, got %s", pool)
@@ -355,7 +355,7 @@ func TestParsePoolRequest_WarpCompoundKey(t *testing.T) {
 	h := &ProxyHandler{router: router}
 
 	req := httptest.NewRequest(http.MethodGet, "/warp/us/example.com", nil)
-	pool, domain, path, _ := h.parsePoolRequest(req)
+	pool, _, domain, path, _ := h.parsePoolRequest(req)
 
 	if pool != "WARP/US" {
 		t.Errorf("expected pool=WARP/US, got %s", pool)
@@ -375,7 +375,7 @@ func TestParsePoolRequest_CountryPool(t *testing.T) {
 	h := &ProxyHandler{router: router}
 
 	req := httptest.NewRequest(http.MethodGet, "/id/ipwho.is", nil)
-	pool, domain, path, _ := h.parsePoolRequest(req)
+	pool, _, domain, path, _ := h.parsePoolRequest(req)
 
 	if pool != "ID" {
 		t.Errorf("expected pool=ID, got %s", pool)
@@ -396,7 +396,7 @@ func TestParsePoolRequest_WarpCompoundKeyWithDomain(t *testing.T) {
 	h := &ProxyHandler{router: router}
 
 	req := httptest.NewRequest(http.MethodGet, "/warp/id/ipwho.is", nil)
-	pool, domain, path, _ := h.parsePoolRequest(req)
+	pool, _, domain, path, _ := h.parsePoolRequest(req)
 
 	if pool != "WARP/ID" {
 		t.Errorf("expected pool=WARP/ID, got %s", pool)
